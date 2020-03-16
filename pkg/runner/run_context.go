@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/nektos/act/pkg/container"
@@ -58,9 +59,11 @@ func (rc *RunContext) startJobContainer() common.Executor {
 	job := rc.Run.Job()
 
 	var image string
+	var options string
 	c := job.Container()
 	if c != nil {
 		image = c.Image
+		options = c.Options
 	} else {
 		platformName := rc.ExprEval.Interpolate(job.RunsOn)
 		image = rc.Config.Platforms[strings.ToLower(platformName)]
@@ -95,6 +98,27 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			binds = append(binds, fmt.Sprintf("%s:%s%s", rc.Config.Workdir, "/github/workspace", bindModifiers))
 		}
 
+		isPrivileged := false
+		var shmSize int64
+		optionFields := strings.Fields(options)
+		for _, o := range optionFields {
+			switch {
+			case o == "--privileged":
+				isPrivileged = true
+			case strings.HasPrefix(o, "--shm-size="):
+				s := strings.TrimPrefix(o, "--shm-size=")
+				var err error
+				if shmSize, err = strconv.ParseInt(s, 10, 64); err != nil {
+					common.Logger(ctx).Errorf("Invalid shm-size %s specified", s)
+					return err
+				}
+			case strings.HasPrefix(o, "-v="):
+				binds = append(binds, strings.TrimPrefix(o, "-v="))
+			default:
+				common.Logger(ctx).Errorf("Unsupported container option %s", o)
+			}
+		}
+
 		rc.JobContainer = container.NewContainer(&container.NewContainerInput{
 			Cmd:        nil,
 			Entrypoint: []string{"/usr/bin/tail", "-f", "/dev/null"},
@@ -111,6 +135,8 @@ func (rc *RunContext) startJobContainer() common.Executor {
 			Binds:       binds,
 			Stdout:      logWriter,
 			Stderr:      logWriter,
+			Privileged:  isPrivileged,
+			ShmSize:     shmSize,
 		})
 
 		var copyWorkspace bool
